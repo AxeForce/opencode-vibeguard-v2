@@ -5,6 +5,7 @@ import { loadConfig } from "./config.js"
 import { buildPatternSet } from "./patterns.js"
 import { PlaceholderSession } from "./session.js"
 import { redactText } from "./engine.js"
+import { restoreText } from "./restore.js"
 import { redactDeep, restoreDeep } from "./deep.js"
 
 /**
@@ -160,7 +161,19 @@ export default {
       const session = getSession(event?.sessionID)
       if (!session) return
       session.cleanup()
-      const restored = restoreDeep(event.input, session)
+
+      let restored = 0
+      if (typeof event.input === "string") {
+        // Some tools receive a raw string payload instead of an object.
+        const after = restoreText(event.input, session)
+        if (after !== event.input) {
+          event.input = after
+          restored = 1
+        }
+      } else {
+        restored = restoreDeep(event.input, session)
+      }
+
       if (debug && restored > 0) {
         console.log(`[opencode-vibeguard] pre-tool restore: ${restored} fragment(s)`)
       }

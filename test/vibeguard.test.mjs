@@ -139,6 +139,11 @@ test("plugin: registers hooks, redacts requests, restores tool input", async () 
     tool(toolEvent)
     assert.ok(toolEvent.input.content.includes(EMAIL))
     assert.ok(toolEvent.input.content.includes(API_KEY))
+
+    const stringInput = { sessionID: "ses_test", input: event.messages[0].content[0].text }
+    tool(stringInput)
+    assert.ok(stringInput.input.includes(EMAIL))
+    assert.ok(stringInput.input.includes(API_KEY))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
