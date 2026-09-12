@@ -182,6 +182,17 @@ export default {
     // so local display and persistence contain real values (closest V2 equivalent
     // of the V1 `experimental.text.complete` hook).
     if (config.restoreStream) {
+      trace("setup.aisdk-probe", {
+        hasAisdk: Boolean(ctx.aisdk),
+        hookType: typeof ctx.aisdk?.hook,
+      })
+      await ctx.aisdk.hook("sdk", (event) => {
+        trace("aisdk.sdk.hook", {
+          model: event?.model?.id,
+          package: event?.package,
+          hasSdk: Boolean(event?.sdk),
+        })
+      })
       await ctx.aisdk.hook("language", (event) => {
         trace("aisdk.language.hook", {
           model: event?.model?.id,
@@ -201,6 +212,7 @@ export default {
           isReplaced: event.language !== undefined,
         })
       })
+      trace("setup.aisdk-registered")
     }
   },
 }
