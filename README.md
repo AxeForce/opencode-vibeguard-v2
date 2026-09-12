@@ -9,8 +9,6 @@ real values.
 
 ## Install
 
-Published as a package plugin. Add it to `opencode.json(c)` or install with the CLI:
-
 ```sh
 # from GitHub
 opencode plugin add github:AxeForce/opencode-vibeguard-v2
@@ -31,27 +29,27 @@ directory there works too.
 | --- | --- |
 | `experimental.chat.messages.transform` | `ctx.session.hook("context" \| "compaction" \| "generate" \| "title")` |
 | `tool.execute.before` | `ctx.tool.hook("execute.before")` |
-| `experimental.text.complete` | `ctx.aisdk.hook("language", ...)` — opt-in `restore_stream` (see below) |
+| `experimental.text.complete` | ❌ not available in OpenCode 2.0.1 (see below) |
 
 The port redacts `text` / `reasoning` / `compaction` parts, `tool-call` inputs, `tool-result`
 outputs, and system parts (`event.system[].text`, which V1 could not see).
 
-## Response-stream restore (`restore_stream`)
+## Known limitation: placeholders in the transcript
 
-V2 has no `experimental.text.complete` hook. The closest equivalent is wrapping the AI SDK
-`LanguageModelV3` via `ctx.aisdk.hook("language", ...)` and restoring placeholders in the
-provider stream before OpenCode persists and renders it.
+V2 has no working response-side restore hook on OpenCode 2.0.1. If the model echoes a placeholder in
+assistant text, the local transcript shows the placeholder. Tested and rejected:
 
-```jsonc
-{
-  "restore_stream": true
-}
-```
+| Approach | Result |
+| --- | --- |
+| `ctx.aisdk.hook("language", ...)` wrapping `LanguageModelV3` | Hooks register (`ctx.aisdk` exists) but are never triggered by the runtime |
+| `ctx.session.hook("http.response", ...)` replacing the response body | Hook fires, but the replaced `event.response` is discarded: the trigger wraps object fields in immer drafts and resets the field with `finishDraft(draft)` after hooks |
+| `session.text.ended` event | Read-only, cannot write back |
 
-- Restores `text-delta`, `reasoning-delta`, `tool-input-delta`, and `doGenerate` content.
-- Placeholders split across stream chunks are buffered and restored when complete.
-- Off by default. Without it, placeholders may remain visible in assistant text (the provider
-  still never sees plaintext, and tools still get real values).
+What still works: the provider never sees plaintext, and tools always receive restored values
+(including `write` / `edit` / `bash`). Only the rendered/stored assistant text keeps placeholders.
+
+Wanted? File an upstream feature request for a text-mutation hook (the V1
+`experimental.text.complete` equivalent).
 
 ## Config
 
@@ -70,7 +68,8 @@ Invalid regex rules are skipped at setup with an error log instead of breaking e
 Builtin patterns: `email`, `china_phone`, `china_id`, `uuid`, `ipv4`, `mac`. Add your own secrets as
 `keywords` and `regex` entries.
 
-Debug logging: set `"debug": true` in the config or `OPENCODE_VIBEGUARD_DEBUG=1`.
+Debug: set `"debug": true` in the config or `OPENCODE_VIBEGUARD_DEBUG=1`. Debug writes load
+diagnostics to `<tmpdir>/opencode-vibeguard-trace.log`.
 
 ## Development
 

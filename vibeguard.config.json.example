@@ -1,7 +1,6 @@
 {
   "enabled": true,
   "debug": false,
-  "restore_stream": false,
   "placeholder_prefix": "__VG_",
   "session": {
     "ttl": "1h",

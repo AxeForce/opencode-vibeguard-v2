@@ -36,7 +36,6 @@ function normalizeConfig(raw) {
   const enabled = Boolean(cfg.enabled)
   const debug = Boolean(cfg.debug)
   const prefix = typeof cfg.placeholder_prefix === "string" && cfg.placeholder_prefix ? cfg.placeholder_prefix : "__VG_"
-  const restoreStream = cfg.restore_stream === true
 
   const session = cfg.session && typeof cfg.session === "object" ? cfg.session : {}
   const ttlMs = parseDurationMs(session.ttl ?? "1h")
@@ -51,7 +50,6 @@ function normalizeConfig(raw) {
     prefix,
     ttlMs,
     maxMappings,
-    restoreStream,
     patterns,
   }
 }

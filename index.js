@@ -6,7 +6,6 @@ import { buildPatternSet } from "./patterns.js"
 import { PlaceholderSession } from "./session.js"
 import { redactText } from "./engine.js"
 import { redactDeep, restoreDeep } from "./deep.js"
-import { createHttpResponseTransformer } from "./stream.js"
 
 /**
  * Trace helper for debugging hook wiring. Enabled by config `debug` or
@@ -113,7 +112,6 @@ export default {
       directory: ctx.location?.directory,
       loadedFrom: config.loadedFrom,
       enabled: config.enabled,
-      restoreStream: config.restoreStream,
     })
 
     if (debug) {
@@ -168,43 +166,9 @@ export default {
       }
     })
 
-    // Opt-in: restore placeholders in the provider response before OpenCode
-    // parses it, so local display and persistence contain real values (closest
-    // V2 equivalent of the V1 `experimental.text.complete` hook).
-    //
-    // Note: `ctx.aisdk.hook("language")` is the semantically nicer layer, but
-    // OpenCode 2.0.1 registers those hooks without ever triggering them, so the
-    // response is rewritten at the HTTP layer instead (protocol-agnostic).
-    if (config.restoreStream) {
-      await ctx.session.hook("http.response", (event) => {
-        const key = String(event?.sessionID ?? "")
-        const session = key ? sessions.get(key) : undefined
-        if (!session) return
-        session.cleanup()
-
-        const response = event?.response
-        if (!response || !response.body) return
-
-        const contentType = response.headers.get("content-type") ?? ""
-        if (!/json|text|event-stream/i.test(contentType)) return
-
-        const headers = new Headers(response.headers)
-        headers.delete("content-length")
-        headers.delete("content-encoding")
-
-        event.response = new Response(
-          response.body.pipeThrough(
-            createHttpResponseTransformer(config.prefix, (ph) => session.lookup(ph), trace),
-          ),
-          {
-            status: response.status,
-            statusText: response.statusText,
-            headers,
-          },
-        )
-        trace("http.response.rewritten", { contentType })
-      })
-      trace("setup.http-response-registered")
-    }
+    // Display-side restore (V1 `experimental.text.complete`) is not available in
+    // OpenCode 2.0.1: `ctx.aisdk` hooks register but never fire, and the
+    // `http.response` field is reset to the original after hooks (immer draft
+    // handling discards whole-field replacement). See README "Known limitation".
   },
 }
