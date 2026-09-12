@@ -48,6 +48,14 @@ assistant text, the local transcript shows the placeholder. Tested and rejected:
 What still works: the provider never sees plaintext, and tools always receive restored values
 (including `write` / `edit` / `bash`). Only the rendered/stored assistant text keeps placeholders.
 
+Practical asymmetry:
+
+- Tool **results** and files contain real values (they are stored as produced, e.g. a `read` or
+  `browser.tabs.list` result shows real IDs).
+- Model-authored **text** and **tool-call arguments** keep placeholders in the transcript, because
+  OpenCode persists the model output before the `execute.before` restore runs and offers no API to
+  rewrite stored messages. The execution itself still uses the restored values.
+
 Wanted? File an upstream feature request for a text-mutation hook (the V1
 `experimental.text.complete` equivalent).
 
