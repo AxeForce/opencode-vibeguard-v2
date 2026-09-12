@@ -80,10 +80,14 @@ export function createRestoredLanguageModel(original, options) {
 
   const restorer = createStreamRestorer(options.prefix, options.lookup)
   const debug = Boolean(options.debug)
+  const trace = typeof options.trace === "function" ? options.trace : () => {}
+
+  trace("model.wrap", { modelId: original.modelId, provider: original.provider })
 
   const doGenerate =
     typeof original.doGenerate === "function"
       ? async (callOptions) => {
+          trace("doGenerate.called")
           const result = await original.doGenerate(callOptions)
           if (!result || !Array.isArray(result.content)) return result
 
@@ -123,15 +127,25 @@ export function createRestoredLanguageModel(original, options) {
 
   const doStream = async (callOptions) => {
     const result = await original.doStream(callOptions)
+    trace("doStream.called", { hasStream: Boolean(result?.stream) })
     if (!result || !result.stream) return result
 
     let restored = 0
+    let tracedFirst = false
     const stream = result.stream.pipeThrough(
       new TransformStream({
         transform(part, controller) {
           if (!part || typeof part !== "object") {
             controller.enqueue(part)
             return
+          }
+
+          if (!tracedFirst) {
+            tracedFirst = true
+            trace("doStream.first-part", { type: part.type, keys: Object.keys(part).join(",") })
+          }
+          if (typeof part.delta === "string" && part.delta.includes("__VG_")) {
+            trace("doStream.placeholder-delta", { type: part.type })
           }
 
           if (
@@ -185,6 +199,7 @@ export function createRestoredLanguageModel(original, options) {
             }
           }
           pending.clear()
+          trace("doStream.flushed", { restored })
           if (debug && restored > 0) {
             console.log(`[opencode-vibeguard] stream restore (stream): ${restored} fragment(s)`)
           }

@@ -1,9 +1,29 @@
+import { appendFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { loadConfig } from "./config.js"
 import { buildPatternSet } from "./patterns.js"
 import { PlaceholderSession } from "./session.js"
 import { redactText } from "./engine.js"
 import { redactDeep, restoreDeep } from "./deep.js"
 import { createRestoredLanguageModel } from "./stream.js"
+
+/**
+ * Trace helper for debugging hook wiring. Enabled by config `debug` or
+ * `OPENCODE_VIBEGUARD_DEBUG`. Writes JSON lines to
+ * `<tmpdir>/opencode-vibeguard-trace.log`.
+ */
+function createTrace(enabled) {
+  if (!enabled) return () => {}
+  const file = join(tmpdir(), "opencode-vibeguard-trace.log")
+  return (event, data = {}) => {
+    try {
+      appendFileSync(file, `${new Date().toISOString()} ${event} ${JSON.stringify(data)}\n`)
+    } catch {
+      // never break a request because of tracing
+    }
+  }
+}
 
 /**
  * VibeGuard for OpenCode V2.
@@ -87,6 +107,14 @@ export default {
   async setup(ctx) {
     const config = await loadConfig(ctx.location.directory)
     const debug = Boolean(process.env.OPENCODE_VIBEGUARD_DEBUG) || Boolean(config.debug)
+    const trace = createTrace(debug)
+
+    trace("setup", {
+      directory: ctx.location?.directory,
+      loadedFrom: config.loadedFrom,
+      enabled: config.enabled,
+      restoreStream: config.restoreStream,
+    })
 
     if (debug) {
       const from = config.loadedFrom ? config.loadedFrom : "not found (plugin is a no-op)"
@@ -155,11 +183,22 @@ export default {
     // of the V1 `experimental.text.complete` hook).
     if (config.restoreStream) {
       await ctx.aisdk.hook("language", (event) => {
+        trace("aisdk.language.hook", {
+          model: event?.model?.id,
+          providerID: event?.model?.providerID,
+          hasLanguage: Boolean(event?.language),
+          hasDoStream: typeof event?.language?.doStream === "function",
+        })
         if (!event || typeof event !== "object" || !event.language) return
         event.language = createRestoredLanguageModel(event.language, {
           prefix: config.prefix,
           lookup: globalLookup,
           debug,
+          trace,
+        })
+        trace("aisdk.language.wrapped", {
+          model: event?.model?.id,
+          isReplaced: event.language !== undefined,
         })
       })
     }
