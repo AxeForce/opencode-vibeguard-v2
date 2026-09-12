@@ -22,17 +22,28 @@ export function createStreamRestorer(prefix, lookup) {
   const prefixStr = String(prefix ?? "__VG_")
   const matchRe = getPlaceholderRegex(prefixStr)
 
-  const restore = (text) => String(text ?? "").replace(matchRe, (ph) => lookup(ph) ?? ph)
+  const restoreWithCount = (text) => {
+    let replaced = 0
+    const out = String(text ?? "").replace(matchRe, (ph) => {
+      const original = lookup(ph)
+      if (original === undefined) return ph
+      replaced++
+      return original
+    })
+    return { text: out, replaced }
+  }
+
+  const restore = (text) => restoreWithCount(text).text
 
   /**
    * Feed a chunk and get everything that is safe to emit plus the held-back tail.
    * @param {string} pending tail held back from previous chunks
    * @param {string} chunk new delta
-   * @returns {{ emit: string, pending: string }}
+   * @returns {{ emit: string, pending: string, replaced: number }}
    */
   const push = (pending, chunk) => {
     const text = `${pending ?? ""}${chunk ?? ""}`
-    if (!text) return { emit: "", pending: "" }
+    if (!text) return { emit: "", pending: "", replaced: 0 }
 
     // End of the last complete placeholder, if any.
     let lastEnd = 0
@@ -55,11 +66,13 @@ export function createStreamRestorer(prefix, lookup) {
       }
       if (possible) {
         const holdFrom = lastEnd + start
-        return { emit: restore(text.slice(0, holdFrom)), pending: text.slice(holdFrom) }
+        const head = restoreWithCount(text.slice(0, holdFrom))
+        return { emit: head.text, pending: text.slice(holdFrom), replaced: head.replaced }
       }
     }
 
-    return { emit: restore(text), pending: "" }
+    const full = restoreWithCount(text)
+    return { emit: full.text, pending: "", replaced: full.replaced }
   }
 
   const flush = (pending) => restore(pending)
@@ -82,13 +95,23 @@ export function createHttpResponseTransformer(prefix, lookup, trace = () => {}) 
   const decoder = new TextDecoder("utf-8", { fatal: false })
   const encoder = new TextEncoder()
   let pending = ""
+  let replaced = 0
+  let seenPrefix = false
+  let firstBytes = ""
 
   return new TransformStream({
     transform(chunk, controller) {
+      if (!firstBytes && chunk?.length) {
+        firstBytes = Array.from(chunk.slice(0, 6))
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join(" ")
+      }
       const text = decoder.decode(chunk, { stream: true })
       if (!text) return
+      if (!seenPrefix && text.includes(prefix)) seenPrefix = true
       const next = restorer.push(pending, text)
       pending = next.pending
+      replaced += next.replaced
       if (next.emit) controller.enqueue(encoder.encode(next.emit))
     },
     flush(controller) {
@@ -97,6 +120,7 @@ export function createHttpResponseTransformer(prefix, lookup, trace = () => {}) 
       if (tail) {
         const next = restorer.push(rest, tail)
         rest = next.pending
+        replaced += next.replaced
         if (next.emit) controller.enqueue(encoder.encode(next.emit))
       }
       if (rest) {
@@ -104,7 +128,7 @@ export function createHttpResponseTransformer(prefix, lookup, trace = () => {}) 
         if (emit) controller.enqueue(encoder.encode(emit))
       }
       pending = ""
-      trace("http.response.flush")
+      trace("http.response.flush", { replaced, seenPrefix, firstBytes })
     },
   })
 }
