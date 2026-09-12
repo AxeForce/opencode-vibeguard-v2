@@ -68,8 +68,53 @@ export function createStreamRestorer(prefix, lookup) {
 }
 
 /**
+ * Transform a provider HTTP response body so placeholders are restored before
+ * OpenCode parses it. Protocol-agnostic: placeholders are plain ASCII bytes in
+ * SSE / JSON payloads, so no vendor-specific parsing is needed. Partial
+ * placeholders split across chunks are held back by the shared restorer.
+ *
+ * @param {string} prefix placeholder prefix, e.g. `__VG_`
+ * @param {(placeholder: string) => string | undefined} lookup
+ * @param {(event: string, data?: object) => void} [trace]
+ */
+export function createHttpResponseTransformer(prefix, lookup, trace = () => {}) {
+  const restorer = createStreamRestorer(prefix, lookup)
+  const decoder = new TextDecoder("utf-8", { fatal: false })
+  const encoder = new TextEncoder()
+  let pending = ""
+
+  return new TransformStream({
+    transform(chunk, controller) {
+      const text = decoder.decode(chunk, { stream: true })
+      if (!text) return
+      const next = restorer.push(pending, text)
+      pending = next.pending
+      if (next.emit) controller.enqueue(encoder.encode(next.emit))
+    },
+    flush(controller) {
+      const tail = decoder.decode()
+      let rest = pending
+      if (tail) {
+        const next = restorer.push(rest, tail)
+        rest = next.pending
+        if (next.emit) controller.enqueue(encoder.encode(next.emit))
+      }
+      if (rest) {
+        const emit = restorer.flush(rest)
+        if (emit) controller.enqueue(encoder.encode(emit))
+      }
+      pending = ""
+      trace("http.response.flush")
+    },
+  })
+}
+
+/**
  * Wrap a LanguageModelV3 so placeholder values are restored in the model output
  * before OpenCode consumes it. Delegates every other member to the original.
+ *
+ * NOT USED on OpenCode 2.0.1: `ctx.aisdk` hooks register but are never
+ * triggered by the runtime. Retained for future versions that wire them.
  *
  * @param {object} original LanguageModelV3 instance
  * @param {{ prefix: string, lookup: (ph: string) => string | undefined, debug?: boolean }} options

@@ -8,7 +8,7 @@ import { buildPatternSet } from "../patterns.js"
 import { redactText } from "../engine.js"
 import { redactDeep, restoreDeep } from "../deep.js"
 import { PlaceholderSession } from "../session.js"
-import { createStreamRestorer, createRestoredLanguageModel } from "../stream.js"
+import { createStreamRestorer, createRestoredLanguageModel, createHttpResponseTransformer } from "../stream.js"
 import { loadConfig } from "../config.js"
 import plugin from "../index.js"
 
@@ -119,6 +119,31 @@ test("stream restorer: unknown placeholder is passed through", () => {
   const unknown = "__VG_EMAIL_0123456789ab__"
   const result = restorer.push("", `hello ${unknown}`)
   assert.equal(result.emit, `hello ${unknown}`)
+})
+
+test("http response transformer: restores placeholder split across byte chunks", async () => {
+  const session = new PlaceholderSession({ prefix: "__VG_", ttlMs: 60_000, maxMappings: 100 })
+  const original = ["secret", "example.org"].join("@")
+  const placeholder = session.getOrCreatePlaceholder(original, "EMAIL")
+  const transformer = createHttpResponseTransformer("__VG_", (ph) => session.lookup(ph))
+
+  const encoder = new TextEncoder()
+  const bytes = encoder.encode(`data: {"delta":"${placeholder}"}\n\n`)
+  const cut = bytes.indexOf(encoder.encode("__VG_")) + 6
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes.slice(0, cut))
+      controller.enqueue(bytes.slice(cut))
+      controller.close()
+    },
+  }).pipeThrough(transformer)
+
+  const decoder = new TextDecoder()
+  let out = ""
+  for await (const chunk of stream) out += decoder.decode(chunk, { stream: true })
+  out += decoder.decode()
+  assert.equal(out, `data: {"delta":"${original}"}\n\n`)
 })
 
 test("language model wrapper: doStream restores split text deltas", async () => {
@@ -238,11 +263,6 @@ function mockContext(dir, hooks) {
         hooks.set("tool:" + name, callback)
       },
     },
-    aisdk: {
-      hook: async (name, callback) => {
-        hooks.set("aisdk:" + name, callback)
-      },
-    },
   }
 }
 
@@ -263,10 +283,10 @@ test("plugin: registers hooks, redacts requests, restores tool input", async () 
     assert.deepEqual(
       [...hooks.keys()].sort(),
       [
-        "aisdk:language",
         "session:compaction",
         "session:context",
         "session:generate",
+        "session:http.response",
         "session:title",
         "tool:execute.before",
       ].sort(),
@@ -288,39 +308,37 @@ test("plugin: registers hooks, redacts requests, restores tool input", async () 
     assert.ok(toolEvent.input.content.includes(EMAIL))
     assert.ok(toolEvent.input.content.includes(API_KEY))
 
-    const aisdk = hooks.get("aisdk:language")
-    const originalModel = {
-      specificationVersion: "v3",
-      provider: "p",
-      modelId: "m",
-      supportedUrls: {},
-      async doGenerate() {
-        return { content: [], finishReason: "stop", usage: {} }
+    const httpHook = hooks.get("session:http.response")
+    const redactedText = event.messages[0].content[0].text
+    const encoder = new TextEncoder()
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: {"text":"${redactedText}"}\n\n`))
+        controller.close()
       },
-      async doStream() {
-        return {
-          stream: new ReadableStream({
-            start(controller) {
-              controller.close()
-            },
-          }),
-        }
-      },
+    })
+    const responseEvent = {
+      sessionID: "ses_test",
+      response: new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
     }
-    const aisdkEvent = { language: originalModel }
-    aisdk(aisdkEvent)
-    assert.notEqual(aisdkEvent.language, originalModel)
+    httpHook(responseEvent)
+    const rewritten = await new Response(responseEvent.response.body).text()
+    assert.ok(rewritten.includes(EMAIL))
+    assert.ok(rewritten.includes(API_KEY))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
-test("plugin: aisdk hook is not registered when restore_stream is off", async () => {
+test("plugin: http.response hook is not registered when restore_stream is off", async () => {
   const dir = makeConfigDir({ enabled: true, restore_stream: false })
   try {
     const hooks = new Map()
     await plugin.setup(mockContext(dir, hooks))
-    assert.ok(!hooks.has("aisdk:language"))
+    assert.ok(!hooks.has("session:http.response"))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

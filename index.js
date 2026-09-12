@@ -6,7 +6,7 @@ import { buildPatternSet } from "./patterns.js"
 import { PlaceholderSession } from "./session.js"
 import { redactText } from "./engine.js"
 import { redactDeep, restoreDeep } from "./deep.js"
-import { createRestoredLanguageModel } from "./stream.js"
+import { createHttpResponseTransformer } from "./stream.js"
 
 /**
  * Trace helper for debugging hook wiring. Enabled by config `debug` or
@@ -149,16 +149,6 @@ export default {
       return created
     }
 
-    // The aisdk hook has no sessionID, so restore looks across every session map.
-    // Placeholder keys are HMAC-derived and unique, so cross-session lookup is sound.
-    const globalLookup = (placeholder) => {
-      for (const session of sessions.values()) {
-        const original = session.lookup(placeholder)
-        if (original !== undefined) return original
-      }
-      return undefined
-    }
-
     const redactRequest = createMessageRedactor(patterns, getSession, debug)
 
     // Register every request kind that can carry conversation state.
@@ -178,41 +168,43 @@ export default {
       }
     })
 
-    // Opt-in: restore placeholders in model output before OpenCode consumes it,
-    // so local display and persistence contain real values (closest V2 equivalent
-    // of the V1 `experimental.text.complete` hook).
+    // Opt-in: restore placeholders in the provider response before OpenCode
+    // parses it, so local display and persistence contain real values (closest
+    // V2 equivalent of the V1 `experimental.text.complete` hook).
+    //
+    // Note: `ctx.aisdk.hook("language")` is the semantically nicer layer, but
+    // OpenCode 2.0.1 registers those hooks without ever triggering them, so the
+    // response is rewritten at the HTTP layer instead (protocol-agnostic).
     if (config.restoreStream) {
-      trace("setup.aisdk-probe", {
-        hasAisdk: Boolean(ctx.aisdk),
-        hookType: typeof ctx.aisdk?.hook,
+      await ctx.session.hook("http.response", (event) => {
+        const key = String(event?.sessionID ?? "")
+        const session = key ? sessions.get(key) : undefined
+        if (!session) return
+        session.cleanup()
+
+        const response = event?.response
+        if (!response || !response.body) return
+
+        const contentType = response.headers.get("content-type") ?? ""
+        if (!/json|text|event-stream/i.test(contentType)) return
+
+        const headers = new Headers(response.headers)
+        headers.delete("content-length")
+        headers.delete("content-encoding")
+
+        event.response = new Response(
+          response.body.pipeThrough(
+            createHttpResponseTransformer(config.prefix, (ph) => session.lookup(ph), trace),
+          ),
+          {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+          },
+        )
+        trace("http.response.rewritten", { contentType })
       })
-      await ctx.aisdk.hook("sdk", (event) => {
-        trace("aisdk.sdk.hook", {
-          model: event?.model?.id,
-          package: event?.package,
-          hasSdk: Boolean(event?.sdk),
-        })
-      })
-      await ctx.aisdk.hook("language", (event) => {
-        trace("aisdk.language.hook", {
-          model: event?.model?.id,
-          providerID: event?.model?.providerID,
-          hasLanguage: Boolean(event?.language),
-          hasDoStream: typeof event?.language?.doStream === "function",
-        })
-        if (!event || typeof event !== "object" || !event.language) return
-        event.language = createRestoredLanguageModel(event.language, {
-          prefix: config.prefix,
-          lookup: globalLookup,
-          debug,
-          trace,
-        })
-        trace("aisdk.language.wrapped", {
-          model: event?.model?.id,
-          isReplaced: event.language !== undefined,
-        })
-      })
-      trace("setup.aisdk-registered")
+      trace("setup.http-response-registered")
     }
   },
 }
