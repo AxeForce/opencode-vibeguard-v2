@@ -105,7 +105,7 @@ function createMessageRedactor(patterns, getSession, debug) {
 export default {
   id: "opencode-vibeguard",
   async setup(ctx) {
-    const config = await loadConfig(ctx.location.directory)
+    let config = await loadConfig(ctx.location.directory)
     const debug = Boolean(process.env.OPENCODE_VIBEGUARD_DEBUG) || Boolean(config.debug)
     const trace = createTrace(debug)
 
@@ -118,18 +118,6 @@ export default {
     if (debug) {
       const from = config.loadedFrom ? config.loadedFrom : "not found (plugin is a no-op)"
       console.log(`[opencode-vibeguard] config: ${from} enabled=${config.enabled}`)
-    }
-
-    if (!config.enabled) return
-
-    const patterns = buildPatternSet(config.patterns)
-
-    if (patterns.errors.length > 0) {
-      for (const error of patterns.errors) {
-        console.error(
-          `[opencode-vibeguard] skipped invalid regex /${error.pattern}/${error.flags}: ${error.message}`,
-        )
-      }
     }
 
     const sessions = new Map()
@@ -148,7 +136,20 @@ export default {
       return created
     }
 
-    const redactRequest = createMessageRedactor(patterns, getSession, debug)
+    // Read on each request so external config edits take effect without a reload.
+    const redactRequest = async (event) => {
+      config = await loadConfig(ctx.location.directory)
+      if (!config.enabled) return
+
+      const patterns = buildPatternSet(config.patterns)
+      for (const error of patterns.errors) {
+        console.error(
+          `[opencode-vibeguard] skipped invalid regex /${error.pattern}/${error.flags}: ${error.message}`,
+        )
+      }
+
+      createMessageRedactor(patterns, getSession, Boolean(process.env.OPENCODE_VIBEGUARD_DEBUG) || config.debug)(event)
+    }
 
     // Register every request kind that can carry conversation state.
     await ctx.session.hook("context", redactRequest)
@@ -157,7 +158,9 @@ export default {
     await ctx.session.hook("title", redactRequest)
 
     // Restore placeholders in tool arguments before local execution.
-    await ctx.tool.hook("execute.before", (event) => {
+    await ctx.tool.hook("execute.before", async (event) => {
+      config = await loadConfig(ctx.location.directory)
+      if (!config.enabled) return
       const session = getSession(event?.sessionID)
       if (!session) return
       session.cleanup()
@@ -174,7 +177,7 @@ export default {
         restored = restoreDeep(event.input, session)
       }
 
-      if (debug && restored > 0) {
+      if ((process.env.OPENCODE_VIBEGUARD_DEBUG || config.debug) && restored > 0) {
         console.log(`[opencode-vibeguard] pre-tool restore: ${restored} fragment(s)`)
       }
     })
