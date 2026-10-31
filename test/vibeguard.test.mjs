@@ -130,18 +130,18 @@ test("plugin: registers hooks, redacts requests, restores tool input", async () 
       system: [{ type: "text", text: `system ${API_KEY}` }],
       messages: [{ role: "user", content: [{ type: "text", text: `mail ${EMAIL} key ${API_KEY}` }] }],
     }
-    context(event)
+    await context(event)
     assert.match(event.system[0].text, /__VG_OPENAI_KEY_[a-f0-9]{12}__/)
     assert.match(event.messages[0].content[0].text, /__VG_EMAIL_[a-f0-9]{12}__/)
 
     const tool = hooks.get("tool:execute.before")
     const toolEvent = { sessionID: "ses_test", input: { content: event.messages[0].content[0].text } }
-    tool(toolEvent)
+    await tool(toolEvent)
     assert.ok(toolEvent.input.content.includes(EMAIL))
     assert.ok(toolEvent.input.content.includes(API_KEY))
 
     const stringInput = { sessionID: "ses_test", input: event.messages[0].content[0].text }
-    tool(stringInput)
+    await tool(stringInput)
     assert.ok(stringInput.input.includes(EMAIL))
     assert.ok(stringInput.input.includes(API_KEY))
   } finally {
@@ -150,11 +150,56 @@ test("plugin: registers hooks, redacts requests, restores tool input", async () 
 })
 
 test("plugin: disabled config is a no-op", async () => {
+  const dir = makeConfigDir({
+    enabled: false,
+    patterns: { builtin: ["email"] },
+  })
+  try {
+    const hooks = new Map()
+    await plugin.setup(mockContext(dir, hooks))
+    const event = {
+      sessionID: "ses_test",
+      system: [{ type: "text", text: EMAIL }],
+      messages: [{ role: "user", content: [{ type: "text", text: EMAIL }] }],
+      input: { content: EMAIL },
+    }
+    const original = structuredClone(event)
+
+    for (const hook of hooks.values()) {
+      await hook(event)
+      assert.deepEqual(event, original)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("plugin: config edits apply to subsequent requests", async () => {
   const dir = makeConfigDir({ enabled: false })
   try {
     const hooks = new Map()
     await plugin.setup(mockContext(dir, hooks))
-    assert.equal(hooks.size, 0)
+    const context = hooks.get("session:context")
+    const event = () => ({
+      sessionID: "ses_test",
+      messages: [{ role: "user", content: [{ type: "text", text: "TestValue" }] }],
+    })
+    const disabled = event()
+    await context(disabled)
+    assert.equal(disabled.messages[0].content[0].text, "TestValue")
+
+    writeFileSync(join(dir, "vibeguard.config.json"), JSON.stringify({
+      enabled: true,
+      patterns: { regex: [{ pattern: "testvalue", flags: "i", category: "SECRET" }] },
+    }))
+    const enabled = event()
+    await context(enabled)
+    assert.match(enabled.messages[0].content[0].text, /^__VG_SECRET_[a-f0-9]{12}__$/)
+
+    writeFileSync(join(dir, "vibeguard.config.json"), JSON.stringify({ enabled: false }))
+    const disabledAgain = event()
+    await context(disabledAgain)
+    assert.equal(disabledAgain.messages[0].content[0].text, "TestValue")
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
